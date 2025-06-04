@@ -95,3 +95,14 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_trace(void)
+{
+  int mask;
+  // 获取系统调用的第一个参数 (n=0)，并将其解释为整数，
+  // 存入当前进程 (myproc()) 的 trace_mask 字段。
+  argint(0, &mask); // 首先从用户寄存器获取参数到局部变量 mask
+  myproc()->trace_mask = mask; // 再将 mask 赋值给进程的 trace_mask 字段
+  return 0; // 系统调用成功返回 0
+}
