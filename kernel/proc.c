@@ -696,3 +696,16 @@ procdump(void)
     printf("\n");
   }
 }
+
+void procnum(uint64 *dst)
+{
+  *dst = 0;
+  struct proc *p;
+  // 遍历 xv6 维护的全局进程数组 proc[]
+  for (p = proc; p < &proc[NPROC]; p++) {
+    // 检查进程状态。只要不是 UNUSED 状态，就认为它是活动的进程。
+    // UNUSED 表示该进程槽位是空的，没有被使用。
+    if (p->state != UNUSED)
+      (*dst)++; // 计数加一
+  }
+}
