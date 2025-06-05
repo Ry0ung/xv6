@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h" 
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -47,12 +49,21 @@ kvminit()
   kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 }
 
+
+
 // Switch h/w page table register to the kernel's page table,
 // and enable paging.
 void
 kvminithart()
 {
   w_satp(MAKE_SATP(kernel_pagetable));
+  sfence_vma();
+}
+
+// Store kernel page table to SATP register
+void
+proc_inithart(pagetable_t kpt){
+  w_satp(MAKE_SATP(kpt));
   sfence_vma();
 }
 
@@ -121,6 +132,16 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
     panic("kvmmap");
 }
 
+///////////////////////////////////////////////////////////////////////////////////
+// Just follow the kvmmap on vm.c
+void
+uvmmap(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if(mappages(pagetable, va, sz, pa, perm) != 0)
+    panic("uvmmap");
+}
+///////////////////////////////////////////////////////////////////////////////////
+
 // translate a kernel virtual address to
 // a physical address. only needed for
 // addresses on the stack.
@@ -132,7 +153,8 @@ kvmpa(uint64 va)
   pte_t *pte;
   uint64 pa;
   
-  pte = walk(kernel_pagetable, va, 0);
+  //pte = walk(kernel_pagetable, va, 0);
+  pte = walk(myproc()->kernelpt, va, 0); // 修改这里
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -439,4 +461,54 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+/**
+ * @param pagetable ��Ҫ��ӡ��ҳ��
+ * @param level ҳ���Ĳ㼶
+ */
+void
+_vmprint(pagetable_t pagetable, int level){
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    // PTE_V is a flag for whether the page table is valid
+    if(pte & PTE_V){
+      for (int j = 0; j < level; j++){
+        if (j) printf(" ");
+        printf("..");
+      }
+      uint64 child = PTE2PA(pte);
+      printf("%d: pte %p pa %p\n", i, pte, child);
+      if((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        // this PTE points to a lower-level page table.
+        _vmprint((pagetable_t)child, level + 1);
+      }
+    }
+  }
+}
+
+/**
+ * @brief vmprint ��ӡҳ��
+ * @param pagetable ��Ҫ��ӡ��ҳ��
+ */
+void
+vmprint(pagetable_t pagetable){
+  printf("page table %p\n", pagetable);
+  _vmprint(pagetable, 1);
+}
+
+// Create a kernel page table for the process
+pagetable_t
+proc_kpt_init(){
+  pagetable_t kernelpt = uvmcreate();
+  if (kernelpt == 0) return 0;
+  uvmmap(kernelpt, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  uvmmap(kernelpt, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+  uvmmap(kernelpt, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+  uvmmap(kernelpt, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+  uvmmap(kernelpt, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+  uvmmap(kernelpt, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+  uvmmap(kernelpt, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+  return kernelpt;
 }

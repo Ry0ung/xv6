@@ -34,12 +34,14 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+      
+      // char *pa = kalloc();
+      // if(pa == 0)
+      //   panic("kalloc");
+      // uint64 va = KSTACK((int) (p - proc));
+      // //kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      // uvmmap(p->kernelpt, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      // p->kstack = va;
   }
   kvminithart();
 }
@@ -120,6 +122,23 @@ found:
     release(&p->lock);
     return 0;
   }
+  
+  // Init the kernal page table
+  p->kernelpt = proc_kpt_init();
+  if(p->kernelpt == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  //////////////////////////////////////////////////////////////////////////
+  char *pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK((int) (p - proc));
+  uvmmap(p->kernelpt, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+  //////////////////////////////////////////////////////////////////////////
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -141,6 +160,25 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+    
+  // --- Lab 3 新增代码（根据你的完整描述） ---
+
+  // 1. 释放页表内的内核栈 (物理内存)
+  // 这是通过进程的 p->kernelpt 解除映射并释放物理页
+  if (p->kstack) { // 检查 kstack 是否被分配过
+      uvmunmap(p->kernelpt, p->kstack, 1, 1);
+  }
+  p->kstack = 0;
+
+  // 2. 释放进程的内核页表结构本身
+  // 这是释放 p->kernelpt 这个 pagetable_t 所占用的物理页，以及所有中间页表页
+  if (p->kernelpt) { // 检查 kernelpt 是否被分配过
+      proc_freekernelpt(p->kernelpt); // 调用 Lab 3 新增的函数
+  }
+  p->kernelpt = 0;
+
+  // --- Lab 3 新增代码结束 ---
+  
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -473,8 +511,12 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
-        swtch(&c->context, &p->context);
+        
+        proc_inithart(p->kernelpt);
 
+        swtch(&c->context, &p->context);
+        
+        kvminithart();
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
@@ -696,4 +738,22 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+void
+proc_freekernelpt(pagetable_t kernelpt)
+{
+  // similar to the freewalk method
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = kernelpt[i];
+    if(pte & PTE_V){
+      kernelpt[i] = 0;
+      if ((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        uint64 child = PTE2PA(pte);
+        proc_freekernelpt((pagetable_t)child);
+      }
+    }
+  }
+  kfree((void*)kernelpt);
 }
